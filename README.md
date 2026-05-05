@@ -143,7 +143,7 @@ python main.py embed-mongo --force
 
 ## Supabase Load
 
-MongoDB 보강이 끝난 뒤에는 `store.py`로 MongoDB 전체 문서를 Supabase `patents` 테이블에 upsert할 수 있습니다.
+MongoDB 보강이 끝난 뒤에는 `store.py`로 `embedded_v2`가 있는 MongoDB 문서만 Supabase `patents` 테이블에 upsert할 수 있습니다. `embedded_v2`가 없는 문서는 검색 벡터가 없으므로 적재하지 않습니다.
 
 Supabase 쪽 테이블은 pgvector를 활성화하고, `_id`를 primary key로 둔 `patents` 테이블이어야 합니다. 현재 적재 스크립트는 아래 컬럼을 기준으로 row를 만듭니다.
 
@@ -167,7 +167,7 @@ SUPABASE_BATCH_SIZE=100
 python store.py --limit 1 --dry-run
 ```
 
-전체 MongoDB 문서를 Supabase에 upsert합니다.
+`embedded_v2`가 있는 MongoDB 문서를 Supabase에 upsert합니다.
 
 ```bash
 python store.py

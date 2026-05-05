@@ -119,8 +119,11 @@ class MongoPatentReader:
         self._client.admin.command("ping")
 
     def count_documents(self) -> int:
-        """MongoDB 전체 문서 수를 반환합니다."""
-        return self._collection.count_documents({})
+        """Supabase 적재 대상 문서 수를 반환합니다.
+
+        `embedded_v2`가 없으면 검색용 Supabase row로 쓰지 않으므로 적재 대상에서 제외합니다.
+        """
+        return self._collection.count_documents(self._load_filter())
 
     def iter_rows(self, limit: int = 0) -> Iterator[dict[str, Any]]:
         """MongoDB 문서를 Supabase `patents` row 형태로 변환해 반환합니다.
@@ -133,7 +136,7 @@ class MongoPatentReader:
         """
         with self._client.start_session() as session:
             cursor = self._collection.find(
-                {},
+                self._load_filter(),
                 self._projection(),
                 no_cursor_timeout=True,
                 session=session,
@@ -150,6 +153,19 @@ class MongoPatentReader:
     def _projection(self) -> dict[str, int]:
         """Supabase 테이블 컬럼에 대응되는 필드만 MongoDB에서 읽습니다."""
         return {column: 1 for column in PATENT_COLUMNS}
+
+    def _load_filter(self) -> dict[str, Any]:
+        """Supabase 적재 대상 MongoDB query를 반환합니다.
+
+        Returns:
+            dict[str, Any]: `embedded_v2`가 존재하고 null/빈 배열이 아닌 문서만 찾는 query입니다.
+        """
+        return {
+            "embedded_v2": {
+                "$exists": True,
+                "$nin": [None, []],
+            }
+        }
 
     def _to_supabase_row(self, doc: dict[str, Any]) -> dict[str, Any]:
         """MongoDB 문서를 Supabase row로 변환합니다."""
