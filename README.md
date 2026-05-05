@@ -2,7 +2,7 @@
 
 이 프로젝트는 `crawler_db.kipris_patents` MongoDB 컬렉션의 KIPRIS 특허 문서를 검색용으로 보강하는 배치 스크립트입니다.
 
-현재 하는 일은 MongoDB 문서 안에서만 끝납니다. Supabase 적재는 아직 포함하지 않았습니다.
+기본 보강 작업은 MongoDB 문서 안에서 끝납니다. 보강이 끝난 뒤 `store.py`로 Supabase `patents` 테이블에 적재할 수 있습니다.
 
 ## What This Does
 
@@ -141,6 +141,44 @@ python main.py embed-mongo --force
 - `embedded_v2_source_field`
 - `embedded_v2_updated_at`
 
+## Supabase Load
+
+MongoDB 보강이 끝난 뒤에는 `store.py`로 MongoDB 전체 문서를 Supabase `patents` 테이블에 upsert할 수 있습니다.
+
+Supabase 쪽 테이블은 pgvector를 활성화하고, `_id`를 primary key로 둔 `patents` 테이블이어야 합니다. 현재 적재 스크립트는 아래 컬럼을 기준으로 row를 만듭니다.
+
+- MongoDB `_id`는 문자열로 변환해 Supabase `"_id"`에 넣습니다.
+- `embedded_v1`은 `vector(768)` 컬럼에 맞춰 768차원인지 검사합니다.
+- `embedded_v2`는 `vector(4096)` 컬럼에 맞춰 4096차원인지 검사합니다.
+- pgvector 컬럼은 Supabase REST API가 받을 수 있도록 `[0.1,0.2,...]` 문자열로 변환합니다.
+
+`.env`에 Supabase 값을 추가합니다.
+
+```dotenv
+SUPABASE_URL=your-supabase-url
+SUPABASE_KEY=your-supabase-service-role-or-insert-key
+SUPABASE_TABLE=patents
+SUPABASE_BATCH_SIZE=100
+```
+
+먼저 1개만 변환해보고 Supabase에는 쓰지 않습니다.
+
+```bash
+python store.py --limit 1 --dry-run
+```
+
+전체 MongoDB 문서를 Supabase에 upsert합니다.
+
+```bash
+python store.py
+```
+
+일부만 적재하려면:
+
+```bash
+python store.py --limit 100
+```
+
 ## Project Structure
 
 - `main.py`: CLI entrypoint
@@ -149,6 +187,7 @@ python main.py embed-mongo --force
 - `app/mongodb_client.py`: MongoDB query/update 전담 repository
 - `app/openai_text.py`: `desc_v1` 생성 API 호출
 - `app/openai_embedding.py`: embedding API 호출
+- `store.py`: MongoDB 전체 문서를 Supabase `patents` 테이블로 batch upsert
 
 ## Recommended Team Workflow
 
