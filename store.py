@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import time
 from collections.abc import Iterator
 from datetime import datetime
 from typing import Any
@@ -70,6 +71,7 @@ class StoreSettings:
         self.supabase_key = self._get_required("SUPABASE_KEY")
         self.supabase_table = os.getenv("SUPABASE_TABLE", "patents").strip()
         self.supabase_batch_size = self._get_int("SUPABASE_BATCH_SIZE", 100)
+        self.supabase_max_retries = self._get_int("SUPABASE_MAX_RETRIES", 3)
 
     def _get_required(self, name: str) -> str:
         """필수 환경변수를 읽습니다.
@@ -125,11 +127,12 @@ class MongoPatentReader:
         """
         return self._collection.count_documents(self._load_filter())
 
-    def iter_rows(self, limit: int = 0) -> Iterator[dict[str, Any]]:
+    def iter_rows(self, limit: int = 0, skip: int = 0) -> Iterator[dict[str, Any]]:
         """MongoDB 문서를 Supabase `patents` row 형태로 변환해 반환합니다.
 
         Args:
             limit: 0이면 전체 문서를 읽고, 양수면 해당 개수만 읽습니다.
+            skip: `_id` 오름차순 기준으로 앞의 N개 적재 대상 문서를 건너뜁니다.
 
         Yields:
             dict[str, Any]: Supabase upsert에 바로 넘길 row입니다.
@@ -140,7 +143,9 @@ class MongoPatentReader:
                 self._projection(),
                 no_cursor_timeout=True,
                 session=session,
-            ).batch_size(self.settings.mongo_page_size)
+            ).sort("_id", 1).batch_size(self.settings.mongo_page_size)
+            if skip:
+                cursor = cursor.skip(skip)
             if limit:
                 cursor = cursor.limit(limit)
 
@@ -235,8 +240,32 @@ class SupabasePatentWriter:
         """
         if not rows:
             return 0
-        self._client.table(self.settings.supabase_table).upsert(rows, on_conflict="_id").execute()
+        self._upsert_with_retry(rows)
         return len(rows)
+
+    def _upsert_with_retry(self, rows: list[dict[str, Any]]) -> None:
+        """Supabase upsert를 실행하고 timeout이면 batch를 쪼개 재시도합니다."""
+        last_error: Exception | None = None
+        for attempt in range(self.settings.supabase_max_retries):
+            try:
+                self._client.table(self.settings.supabase_table).upsert(rows, on_conflict="_id").execute()
+                return
+            except Exception as exc:
+                last_error = exc
+                if self._is_statement_timeout(exc) and len(rows) > 1:
+                    midpoint = len(rows) // 2
+                    self._upsert_with_retry(rows[:midpoint])
+                    self._upsert_with_retry(rows[midpoint:])
+                    return
+                sleep_seconds = min(2**attempt, 10)
+                print(f"Supabase upsert failed, retrying in {sleep_seconds}s: {exc}")
+                time.sleep(sleep_seconds)
+        raise RuntimeError(f"Supabase upsert failed after retries: {last_error}") from last_error
+
+    def _is_statement_timeout(self, exc: Exception) -> bool:
+        """Postgres statement timeout 오류인지 문자열 기반으로 확인합니다."""
+        message = str(exc)
+        return "57014" in message or "statement timeout" in message
 
 
 class MongoToSupabaseStore:
@@ -248,25 +277,27 @@ class MongoToSupabaseStore:
         self.writer = writer
         self.settings = settings
 
-    def run(self, limit: int = 0, dry_run: bool = False) -> None:
+    def run(self, limit: int = 0, skip: int = 0, dry_run: bool = False) -> None:
         """MongoDB 문서를 읽어 Supabase로 batch upsert합니다.
 
         Args:
             limit: 0이면 전체 문서를 적재합니다. 양수면 해당 개수만 적재합니다.
+            skip: `_id` 오름차순 기준으로 앞의 N개 적재 대상 문서를 건너뜁니다.
             dry_run: True면 MongoDB row 변환까지만 하고 Supabase에는 쓰지 않습니다.
         """
         self.reader.ping()
-        total = self.reader.count_documents()
+        total = max(self.reader.count_documents() - skip, 0)
         if limit:
             total = min(total, limit)
         print(f"source MongoDB documents: {total}")
+        print(f"skip: {skip}")
         print(f"supabase table: {self.settings.supabase_table}")
         print(f"batch size: {self.settings.supabase_batch_size}")
 
         processed = 0
         upserted = 0
         batch: list[dict[str, Any]] = []
-        for row in self.reader.iter_rows(limit=limit):
+        for row in self.reader.iter_rows(limit=limit, skip=skip):
             batch.append(row)
             if len(batch) >= self.settings.supabase_batch_size:
                 upserted += self._flush(batch=batch, dry_run=dry_run)
@@ -294,6 +325,7 @@ def parse_args() -> argparse.Namespace:
     """CLI 인자를 파싱합니다."""
     parser = argparse.ArgumentParser(description="Load MongoDB KIPRIS patent documents into Supabase patents table.")
     parser.add_argument("--limit", type=int, default=0, help="Load only N MongoDB documents.")
+    parser.add_argument("--skip", type=int, default=0, help="Skip first N eligible MongoDB documents by _id order.")
     parser.add_argument("--dry-run", action="store_true", help="Convert rows but do not write Supabase.")
     return parser.parse_args()
 
@@ -306,6 +338,7 @@ def main() -> None:
     writer = SupabasePatentWriter(settings)
     MongoToSupabaseStore(reader=reader, writer=writer, settings=settings).run(
         limit=args.limit,
+        skip=args.skip,
         dry_run=args.dry_run,
     )
 
