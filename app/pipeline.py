@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections.abc import Iterator
 from typing import Any
 
@@ -32,47 +33,51 @@ class KiprisPatentPipeline:
         self.embedding_service = embedding_service
         self.desc_service = desc_service
 
-    def run_all(self, limit: int = 0, dry_run: bool = False) -> None:
+    def run_all(self, limit: int = 0, dry_run: bool = False, workers: int | None = None) -> None:
         """누락 `desc_v1` 생성 후 `embedded_v2` 생성까지 순서대로 실행합니다.
 
         Args:
             limit: 각 단계에서 처리할 최대 문서 수입니다. 0이면 각 단계 전체를 처리합니다.
             dry_run: True면 LLM/API 호출 결과를 출력만 하고 MongoDB를 수정하지 않습니다.
+            workers: `desc_v1` 생성에 사용할 병렬 worker 수입니다. None이면 `.env`의 `DESC_WORKERS`를 씁니다.
         """
         print("step 1/2: generate missing desc_v1")
-        self.generate_missing_desc(limit=limit, dry_run=dry_run)
+        self.generate_missing_desc(limit=limit, dry_run=dry_run, workers=workers)
         print("step 2/2: embed desc_v1 into embedded_v2")
         self.embed_mongo(limit=limit, force=False, dry_run=dry_run)
 
-    def generate_missing_desc(self, limit: int = 0, dry_run: bool = False) -> None:
+    def generate_missing_desc(self, limit: int = 0, dry_run: bool = False, workers: int | None = None) -> None:
         """`desc_v1`이 비어 있는 문서에 일반 고객용 설명을 생성해 저장합니다.
 
         Args:
             limit: 0이면 전체 누락 문서를 처리합니다. 양수면 해당 개수만 처리합니다.
             dry_run: True면 생성 결과를 출력만 하고 MongoDB에는 저장하지 않습니다.
+            workers: 병렬 API 호출 개수입니다. None이면 `.env`의 `DESC_WORKERS`를 씁니다.
         """
         self.mongo_repo.ping()
         total = self.mongo_repo.count_missing_desc_targets()
         if limit:
             total = min(total, limit)
+        worker_count = max(1, workers or self.settings.desc_workers)
         print(f"missing desc_v1 documents: {total}")
+        print(f"desc_v1 workers: {worker_count}")
 
         processed = 0
         updated = 0
-        for doc in self.mongo_repo.iter_missing_desc_targets(limit=limit):
-            desc_v1 = self.desc_service.generate_desc_v1(doc)
+        for docs in self._iter_missing_desc_batches(limit=limit, batch_size=worker_count):
+            generated_docs = self._generate_desc_batch(docs=docs, workers=worker_count)
             if dry_run:
-                print(f"_id: {doc['_id']}")
-                print(f"generated desc_v1: {desc_v1}")
+                for item in generated_docs:
+                    print(f"_id: {item['_id']}")
+                    print(f"generated desc_v1: {item['desc_v1']}")
                 print("MongoDB was not updated.")
             else:
-                updated += self.mongo_repo.save_desc_v1(
-                    doc_id=doc["_id"],
-                    desc_v1=desc_v1,
+                updated += self.mongo_repo.save_desc_v1_many(
+                    generated_docs=generated_docs,
                     model=self.settings.desc_model,
                 )
 
-            processed += 1
+            processed += len(generated_docs)
             print(f"processed={processed} updated={updated} dry_run={dry_run}")
 
         print(f"done processed={processed} updated={updated} dry_run={dry_run}")
@@ -140,3 +145,41 @@ class KiprisPatentPipeline:
                 batch = []
         if batch:
             yield batch
+
+    def _iter_missing_desc_batches(self, limit: int, batch_size: int) -> Iterator[list[dict[str, Any]]]:
+        """`desc_v1` 생성 대상 문서를 worker 수에 맞춰 batch 단위로 묶어 반환합니다."""
+        batch: list[dict[str, Any]] = []
+        for doc in self.mongo_repo.iter_missing_desc_targets(limit=limit):
+            batch.append(doc)
+            if len(batch) >= batch_size:
+                yield batch
+                batch = []
+        if batch:
+            yield batch
+
+    def _generate_desc_batch(self, docs: list[dict[str, Any]], workers: int) -> list[dict[str, Any]]:
+        """문서 batch의 `desc_v1`을 병렬로 생성합니다."""
+        if workers <= 1 or len(docs) == 1:
+            return [
+                {
+                    "_id": doc["_id"],
+                    "desc_v1": self.desc_service.generate_desc_v1(doc),
+                }
+                for doc in docs
+            ]
+
+        generated: list[dict[str, Any]] = []
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            future_to_doc = {
+                executor.submit(self.desc_service.generate_desc_v1, doc): doc
+                for doc in docs
+            }
+            for future in as_completed(future_to_doc):
+                doc = future_to_doc[future]
+                generated.append(
+                    {
+                        "_id": doc["_id"],
+                        "desc_v1": future.result(),
+                    }
+                )
+        return generated

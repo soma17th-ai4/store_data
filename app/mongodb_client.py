@@ -14,7 +14,7 @@ class KiprisMongoRepository:
 
     외부에서는 `count_embedding_targets`, `iter_embedding_targets`,
     `get_first_embedding_target`, `save_embeddings`, `count_missing_desc_targets`,
-    `iter_missing_desc_targets`, `save_desc_v1`만 사용하면 됩니다.
+    `iter_missing_desc_targets`, `save_desc_v1_many`만 사용하면 됩니다.
     """
 
     def __init__(self, settings: AppSettings) -> None:
@@ -198,35 +198,42 @@ class KiprisMongoRepository:
             finally:
                 cursor.close()
 
-    # 공개 함수: 생성된 desc_v1을 MongoDB 문서에 저장합니다.
-    def save_desc_v1(self, doc_id: Any, desc_v1: str, model: str) -> int:
-        """생성한 `desc_v1`을 MongoDB에 저장합니다.
+    # 공개 함수: 생성된 desc_v1 여러 개를 MongoDB에 bulk 저장합니다.
+    def save_desc_v1_many(self, generated_docs: list[dict[str, Any]], model: str) -> int:
+        """여러 문서의 `desc_v1` 생성 결과를 MongoDB에 한 번에 저장합니다.
 
         Args:
-            doc_id: 업데이트할 MongoDB 문서의 `_id` 값입니다.
-            desc_v1: 저장할 일반 고객용 한국어 설명 문장입니다.
+            generated_docs: `_id`와 `desc_v1` 키를 가진 생성 결과 목록입니다.
             model: `desc_v1` 생성에 사용한 모델명입니다. 예: `solar-mini-250422`.
 
         Returns:
-            int: 수정된 문서 수입니다. 보통 1이며, 이미 값이 있으면 0일 수 있습니다.
+            int: 수정된 문서 수입니다.
         """
-        result = self._collection.update_one(
-            {
-                "_id": doc_id,
-                "$or": [
-                    {self.settings.source_text_field: {"$exists": False}},
-                    {self.settings.source_text_field: None},
-                    {self.settings.source_text_field: ""},
-                ],
-            },
-            {
-                "$set": {
-                    self.settings.source_text_field: desc_v1,
-                    "desc_v1_model": model,
-                    "desc_v1_generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                }
-            },
-        )
+        if not generated_docs:
+            return 0
+
+        generated_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        operations = [
+            UpdateOne(
+                {
+                    "_id": item["_id"],
+                    "$or": [
+                        {self.settings.source_text_field: {"$exists": False}},
+                        {self.settings.source_text_field: None},
+                        {self.settings.source_text_field: ""},
+                    ],
+                },
+                {
+                    "$set": {
+                        self.settings.source_text_field: item["desc_v1"],
+                        "desc_v1_model": model,
+                        "desc_v1_generated_at": generated_at,
+                    }
+                },
+            )
+            for item in generated_docs
+        ]
+        result = self._collection.bulk_write(operations, ordered=False)
         return result.modified_count
 
     # 내부 함수: MongoDB query 생성에만 사용합니다.

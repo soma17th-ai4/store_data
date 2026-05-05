@@ -83,10 +83,22 @@ python main.py run-all
 python main.py run-all --limit 1 --dry-run
 ```
 
+`desc_v1` 생성은 기본적으로 병렬 worker를 사용합니다. 기본값은 `.env`의 `DESC_WORKERS=5`이고, 실행 시 바꿀 수 있습니다.
+
+```bash
+python main.py run-all --workers 8
+```
+
 `desc_v1` 누락 문서만 생성합니다.
 
 ```bash
 python main.py generate-missing-desc
+```
+
+`desc_v1` 생성만 worker 수를 바꿔 실행할 수도 있습니다.
+
+```bash
+python main.py generate-missing-desc --workers 8
 ```
 
 `desc_v1` 누락 문서 1개만 테스트합니다.

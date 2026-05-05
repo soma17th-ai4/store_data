@@ -29,6 +29,7 @@ class AppSettings:
     source_text_field: str
     target_embedding_field: str
     batch_size: int
+    desc_workers: int
     mongo_page_size: int
     openai_max_retries: int
 
@@ -74,6 +75,7 @@ class EnvSettingsLoader:
             source_text_field=os.getenv("SOURCE_TEXT_FIELD", "desc_v1").strip(),
             target_embedding_field=os.getenv("TARGET_EMBEDDING_FIELD", "embedded_v2").strip(),
             batch_size=self._get_int("BATCH_SIZE", 64),
+            desc_workers=self._get_int("DESC_WORKERS", 5),
             mongo_page_size=self._get_int("MONGO_PAGE_SIZE", 500),
             openai_max_retries=self._get_int("OPENAI_MAX_RETRIES", 5),
         )

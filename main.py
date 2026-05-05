@@ -25,9 +25,9 @@ class CliApp:
         )
 
         if args.command == "run-all":
-            pipeline.run_all(limit=args.limit, dry_run=args.dry_run)
+            pipeline.run_all(limit=args.limit, dry_run=args.dry_run, workers=args.workers)
         elif args.command == "generate-missing-desc":
-            pipeline.generate_missing_desc(limit=args.limit, dry_run=args.dry_run)
+            pipeline.generate_missing_desc(limit=args.limit, dry_run=args.dry_run, workers=args.workers)
         elif args.command == "embed-mongo":
             pipeline.embed_mongo(limit=args.limit, force=args.force, dry_run=args.dry_run)
         elif args.command == "test-first-embedding":
@@ -47,6 +47,7 @@ class CliApp:
             help="Generate missing desc_v1 values first, then embed available desc_v1 values.",
         )
         run_all.add_argument("--limit", type=int, default=0, help="Process only N documents per step.")
+        run_all.add_argument("--workers", type=int, default=0, help="Parallel desc_v1 generation workers.")
         run_all.add_argument("--dry-run", action="store_true", help="Call APIs but do not update MongoDB.")
 
         desc = sub.add_parser(
@@ -54,6 +55,7 @@ class CliApp:
             help="Generate desc_v1 for MongoDB documents where desc_v1 is missing.",
         )
         desc.add_argument("--limit", type=int, default=0, help="Process only N missing desc_v1 documents.")
+        desc.add_argument("--workers", type=int, default=0, help="Parallel desc_v1 generation workers.")
         desc.add_argument("--dry-run", action="store_true", help="Generate desc_v1 but do not update MongoDB.")
 
         embed = sub.add_parser("embed-mongo", help="Create embeddings from MongoDB desc_v1 and save embedded_v2.")
